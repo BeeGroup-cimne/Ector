@@ -2,6 +2,25 @@ from pyomo.environ import *
 import pandas as pd
 
 class constrains:
+    def sharing_factors_disc(self,i,t,counting=False):
+        """Returns the time index for the sharing factors depending on the frequency defined for each consumer."""
+        if not hasattr(self,"freq_SF"):
+            return t
+        row = self.freq_SF[self.freq_SF["i"]==i]
+        if counting:
+            t=len(self.timestamps)-1
+        if row.empty:
+            return t
+        elif "type_freq" not in row.columns or row.type_freq.values[0]=="contiguous":
+            return int(((t-(t % row.freq))/row.freq).iloc[0])
+        elif row.type_freq.values[0]=="Daily":
+            return int(((t%(24/self.At) - (t%(24/self.At)% row.freq))/row.freq).iloc[0])#int(t % (24/self.At))
+        elif row.type_freq.values[0]=="WeekdayDaily":
+            if t > (24/self.At)*5:
+                return int((((t%(24/self.At) - (t%(24/self.At)% row.freq))/row.freq)+((24/self.At-((24/self.At)%row.freq)+row.freq)/row.freq)).iloc[0])#int(t % (24/self.At))+(24/self.At)
+            else:
+                return int(((t%(24/self.At) - (t%(24/self.At)% row.freq))/row.freq).iloc[0])#int(t % (24/self.At))
+
     def constrain_sharing_factors(self): 
         """Builds the coinstrain to make the summatory of all sharing factors to one,Sharing_Factors."""
         if self.mode == "Eallocation":
@@ -57,8 +76,20 @@ class constrains:
             Variables = ["SF","SF_CP"]
             self.search_and_add_Par_Var(Parameters,Variables)
             def Sharing_Factors(model,t,cp):
-                return 1 ==  sum(model.I_uses_CP[i,cp]*model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp] for i in model.I) + sum(model.CP_uses_CP[cp2,cp]*model.SF_CP[t,cp2,cp] for cp2 in model.CP if cp2 != cp) # if cp2 != cp2#invertit Cp2 i Cp, perque aquí busquem a quins CP2 injecta cp
+                return 1 ==  sum(model.I_uses_CP[i,cp]*model.SF[i,self.sharing_factors_disc(i,t),cp] for i in model.I) + sum(model.CP_uses_CP[cp2,cp]*model.SF_CP[t,cp2,cp] for cp2 in model.CP if cp2 != cp) # if cp2 != cp2#invertit Cp2 i Cp, perque aquí busquem a quins CP2 injecta cp
             self.model.Sharing_Factors = Constraint(self.model.T,self.model.CP,rule=Sharing_Factors)
+            #LIMITING REDUNDANT CONSTRAINS      
+            for CP in self.model.CP:
+                deactivated = []
+                for t in self.model.T:
+                    if t in deactivated:
+                        continue
+                    for tt in self.model.T:
+                        if tt > t and tt not in deactivated:
+                            if self.model.Sharing_Factors[(t,CP)].expr.to_string() == self.model.Sharing_Factors[(tt,CP)].expr.to_string():
+                                self.model.Sharing_Factors[(tt,CP)].deactivate()
+                                deactivated.append(tt)
+
             
     def constrain_max_energy_allocated(self,percentage):
         if self.mode == "Eallocation":
@@ -96,7 +127,7 @@ class constrains:
                 #        # if cp2 != cp2#invertit Cp2 i Cp, perque aquí busquem a quins CP2 injecta
         elif self.mode == "SF":
             def Solar_energy_shared2(model,i,t,cp): 
-                return percentage>= model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp]
+                return percentage>= model.SF[i,self.sharing_factors_disc(i,t),cp]
         self.model.Solar_energy_shared2 = Constraint(self.model.I,self.model.T,self.model.CP,rule=Solar_energy_shared2)
 
     
@@ -134,7 +165,7 @@ class constrains:
             self.search_and_add_Par_Var(Parameters,Variables)
             def max_instanteneos_self_consumption(model,i,t): 
                 energy_CP = self.get_energy_CP(model,t)
-                return percentage >= (sum(model.I_uses_CP[i,cp]*model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp]*energy_CP[cp] for cp in model.CP))/ (model.P_Consumed[i,t]+10**-3)
+                return percentage >= (sum(model.I_uses_CP[i,cp]*model.SF[i,self.sharing_factors_disc(i,t),cp]*energy_CP[cp] for cp in model.CP))/ (model.P_Consumed[i,t]+10**-3)
                     # Solar + E_imported + P_bat_discharge - P_bat_charge  = E_shared + E_Exported
 
                         # if cp2 != cp2#invertit Cp2 i Cp, perque aquí busquem a quins CP2 injecta
@@ -150,7 +181,7 @@ class constrains:
             self.model.def_instanteneos_self_consumption = Constraint(rule=def_instanteneos_self_consumption) 
         elif self.mode == "SF":
             Parameters =["I","T","CP","P_Consumed","I_uses_CP"] 
-            Variables = []
+            Variables = ["SF","mean_self_consumption"]
             Parameters.append("CP_uses_CP")
             if self.SF_Par:
                 Parameters.append("SF")
@@ -173,7 +204,7 @@ class constrains:
                 energy_CP = {}
                 for t in model.T:
                     energy_CP[t] = self.get_energy_CP(model,t)
-                return model.mean_self_consumption == sum(sum(sum(model.I_uses_CP[i,cp]*model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp]*energy_CP[t][cp] for cp in model.CP)/\
+                return model.mean_self_consumption == sum(sum(sum(model.I_uses_CP[i,cp]*model.SF[i,self.sharing_factors_disc(i,t),cp]*energy_CP[t][cp] for cp in model.CP)/\
                                      (model.P_Consumed[i,t]+10**-3)for t in model.T)/len(model.T)for i in model.I)/len(model.I)
             self.model.def_instanteneos_self_consumption = Constraint(rule=def_instanteneos_self_consumption) 
 
@@ -191,12 +222,12 @@ class constrains:
                 for i in self.model.I:
                     if not i in self.list_CP[cp]["I"]:
                         for t in self.model.T:
-                            instance.SF[i,t,cp_internal].fix(0)
+                            instance.SF[i,t,cp].fix(0)
             for cp in self.model.CP:
                 for i in self.model.I:
+                    max_SF_t = self.sharing_factors_disc(i,0,counting=True)
                     for t in self.model.T:
-                        Tmax = len(self.model.T)-1
-                        if t > int((Tmax-(Tmax % self.model.freq[i]))/self.model.freq[i]):
+                        if t > max_SF_t:
                             self.model.SF[i,t,cp].fix(0)
         if "SF_CP" in self.Variables and self.CP <= 1:
             for cp,cp_internal in self.list_CP["names"].items():
@@ -379,21 +410,21 @@ class constrains:
             self.search_and_add_Par_Var(Parameters,Variables)
             def P_Balance(model,i,t):
                 energy_CP = self.get_energy_CP(model,t)
-                
+
                 return model.P_Consumed_bill[i,t]  - model.P_Injected_bill[i,t]  ==  model.P_Consumed[i,t]\
-                    - sum(model.I_uses_CP[i,cp]*model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp]*energy_CP[cp] for cp in model.CP)
-        self.model.P_Balance = Constraint(self.model.I,self.model.T,rule=P_Balance)
+                    - sum(model.I_uses_CP[i,cp]*model.SF[i,self.sharing_factors_disc(i,t),cp]*energy_CP[cp] for cp in model.CP)
+            self.model.P_Balance = Constraint(self.model.I,self.model.T,rule=P_Balance)
 
 
     def constrain_cost(self):
         """Builds a constrain to calculate the cost in each consumer of the EC, const_cost. It is calculated for the whole period and it only can be positive."""
-        Parameters =["I","T","At","Ecost","Ecost_sell"] 
+        Parameters =["I","T","At","Ecost","Ecost_sell","count_timestamp"] 
         Variables = ["P_Consumed_bill","P_Injected_bill","Cost"]
         self.search_and_add_Par_Var(Parameters,Variables)
 
         #limit the cost of the month to 0
         def const_cost(model,i):
-            return model.Cost[i] == sum((model.P_Consumed_bill[i,t]*model.At*model.Ecost[i,t])-(model.P_Injected_bill[i,t]*model.At*model.Ecost_sell[i,t]) for t in model.T)
+            return model.Cost[i] == sum(((model.P_Consumed_bill[i,t]*model.At*model.Ecost[i,t])-(model.P_Injected_bill[i,t]*model.At*model.Ecost_sell[i,t]))*model.count_timestamp[t] for t in model.T)
         self.model.const_cost = Constraint(self.model.I,rule=const_cost)
     
     def constrain_fix_cost(self,value):
@@ -427,13 +458,12 @@ class constrains:
             def P_Utilized_limitation1(model,i,t):
                 energy_CP_consumed = self.get_energy_CP_consumed(model,t)
             
-                return model.P_Consumed_bill[i,t] <= model.P_Consumed[i,t] + sum(model.I_uses_CP[i,cp]*model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp]*energy_CP_consumed[cp] for cp in model.CP)
+                return model.P_Consumed_bill[i,t] <= model.P_Consumed[i,t] + sum(model.I_uses_CP[i,cp]*model.SF[i,self.sharing_factors_disc(i,t),cp]*energy_CP_consumed[cp] for cp in model.CP)
             self.model.P_Utilized_limitation1 = Constraint(self.model.I,self.model.T,rule=P_Utilized_limitation1) #abans s'anulaven sóc tonto
-        
             def P_Utilized_limitation(model,i,t):
                 energy_CP_injected = self.get_energy_CP_injected(model,t)
 
-                return model.P_Injected_bill[i,t] <= + sum(model.I_uses_CP[i,cp]*model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp]*energy_CP_injected[cp] for cp in model.CP)
+                return model.P_Injected_bill[i,t] <= + sum(model.I_uses_CP[i,cp]*model.SF[i,self.sharing_factors_disc(i,t),cp]*energy_CP_injected[cp] for cp in model.CP)
             self.model.P_Utilized_limitation = Constraint(self.model.I,self.model.T,rule=P_Utilized_limitation)
         elif self.mode == "Eallocation":
             def P_Utilized_limitation1(model,i,t):           
@@ -441,6 +471,7 @@ class constrains:
             self.model.P_Utilized_limitation1 = Constraint(self.model.I,self.model.T,rule=P_Utilized_limitation1) #abans s'anulaven sóc tonto
             
             if self.Bat > 0:
+                self.search_and_add_Par_Var(["is_Bat_in_CP","is_PV_in_CP","P_PV"], [])
                 def P_Utilized_limitation(model,i,t):           
                     return model.P_Injected_bill[i,t] <= sum(model.I_uses_CP[i,cp]*model.E_shared[i,t,cp] for cp in model.CP)# - model.P_Consumed[i,t]
                 self.model.P_Utilized_limitation = Constraint(self.model.I,self.model.T,rule=P_Utilized_limitation) #abans s'anulaven sóc tonto
@@ -474,7 +505,7 @@ class constrains:
         #    def freq_SF(model,i,t):
         #        if t % model.freq[i] != 0 and t != 0:
         #            for cp in model.CP:
-        #                return model.SF[i,t-1,cp] == model.SF[i,int((t-(t % model.freq[i]))/model.freq[i]),cp]
+        #                return model.SF[i,t-1,cp] == model.SF[i,sharing_factors_disc(i,t),cp]
         #        return Constraint.Skip
         #    self.model.freq_SF = Constraint(self.model.I,self.model.T,rule=freq_SF)
         #if hasattr(self,"freq_SF"):
@@ -508,13 +539,13 @@ class constrains:
         self.search_and_add_Par_Var(Parameters,Variables)
         if self.PV > 0 and self.Bat == 0:
             def Payback_funct(model,i):
-                return model.Payback[i] == (sum(model.Ecost[i,t]*model.P_Consumed[i,t]for t in model.T)-model.Cost[i])/sum(model.I_uses_CP[i,cp]*sum(model.is_PV_in_CP[pv,cp]*model.Inv_PV[i,pv] for pv in model.PV)for cp in model.CP)
+                return model.Payback[i] == (sum(model.Ecost[i,t]*model.P_Consumed[i,t]*model.count_timestamp[t] for t in model.T)-model.Cost[i])/sum(model.I_uses_CP[i,cp]*sum(model.is_PV_in_CP[pv,cp]*model.Inv_PV[i,pv] for pv in model.PV)for cp in model.CP)
         elif self.PV == 0 and self.Bat > 0:
             def Payback_funct(model,i):
-                return model.Payback[i] == (sum(model.Ecost[i,t]*model.P_Consumed[i,t]for t in model.T)-model.Cost[i])/sum(model.I_uses_CP[i,cp]*sum(model.is_Bat_in_CP[bat,cp]*model.Inv_Bat[i,bat] for bat in model.Bat)for cp in model.CP)
+                return model.Payback[i] == (sum(model.Ecost[i,t]*model.P_Consumed[i,t]*model.count_timestamp[t] for t in model.T)-model.Cost[i])/sum(model.I_uses_CP[i,cp]*sum(model.is_Bat_in_CP[bat,cp]*model.Inv_Bat[i,bat] for bat in model.Bat)for cp in model.CP)
         elif self.PV > 0 and self.Bat > 0:
             def Payback_funct(model,i):
-                return model.Payback[i] == (sum(model.Ecost[i,t]*model.P_Consumed[i,t]for t in model.T)-model.Cost[i])/sum(model.I_uses_CP[i,cp]*(sum(model.is_Bat_in_CP[bat,cp]*model.Inv_Bat[i,bat] for bat in model.Bat)\
+                return model.Payback[i] == (sum(model.Ecost[i,t]*model.P_Consumed[i,t]*model.count_timestamp[t] for t in model.T)-model.Cost[i])/sum(model.I_uses_CP[i,cp]*(sum(model.is_Bat_in_CP[bat,cp]*model.Inv_Bat[i,bat] for bat in model.Bat)\
                     + sum(model.is_PV_in_CP[pv,cp]*model.Inv_PV[i,pv] for pv in model.PV))for cp in model.CP)
         self.model.Payback_funct = Constraint(self.model.I,rule=Payback_funct)
 
@@ -548,7 +579,7 @@ class constrains:
     
 
     def constrain_Battery_limits(self,margin_end=None):
-        Parameters =["Bat","T","At","EBat_0","EBat_end","EBat_max"] 
+        Parameters =["Bat","T","At","EBat_0","EBat_end","EBat_max","is_Bat_in_CP"]
         Variables = ["EBat","PBat_ch","PBat_dch"]
         i = 'PBat_max'
         def fb(model,t,bat):
@@ -559,7 +590,7 @@ class constrains:
         ii = 'EBat_max'
         def fb(model,t,bat):
             return ((pd.pivot_table(self.Bat_info,index=["Bat_index"],values= i)*self.At).to_dict()[i][bat],(pd.pivot_table(self.Bat_info,index=["Bat_index"],values= ii)*self.At).to_dict()[ii][bat])
-        self.Define_parameters_variables("EBat","Var",domain = "NonNegativeReals",bound = fb,initialize=4000)
+        self.Define_parameters_variables("EBat","Var",domain = "NonNegativeReals",bound = fb,initialize=self.Bat_info["EBat_0"].values[0])
         self.search_and_add_Par_Var(Parameters,Variables)
 
         #def Battery_limits_min(model,t,bat):

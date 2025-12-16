@@ -8,9 +8,10 @@ from ECTOR.src.contrains import constrains
 from ECTOR.src.cost_function import Cost_Function
 from ECTOR.src.plotter import plotter
 from ECTOR.src.standard_cases import standard_cases
+from ECTOR.src.validation import Validation
 
 
-class ECTOR(Parameters,constrains,Cost_Function,plotter,standard_cases):
+class ECTOR(Parameters,constrains,Cost_Function,plotter,standard_cases,Validation):
     def __init__(self,mode,SF_Par,Abstract = False):
         self.mode = mode
         self.SF_Par = SF_Par
@@ -40,8 +41,7 @@ class ECTOR(Parameters,constrains,Cost_Function,plotter,standard_cases):
                     results (list of pandas.Dataframes): List of the results formated
         """
 
-        opt = SolverFactory(solver)
-        
+        opt = SolverFactory(solver)#, solver_io="python")
         #opt.options['slog'] = 1
         #if(solver == "glpk"):
         #    opt.options['mipgap'] = 0.02
@@ -100,10 +100,13 @@ class ECTOR(Parameters,constrains,Cost_Function,plotter,standard_cases):
                 df_index_group[df_index_group.duplicated()] = df_index_group[df_index_group.duplicated()]+"2"
                 df.index.names = [str(i) for i in df_index_group[0].values]
                 index_group = [str(i) for i in df_index_group[0].values]
+                index_new = []
+            elif len(index_group) == 0:
+                index_new = "index"
             else:
                 df.index.names = index_group
+                index_new = []
             df = df.reset_index()
-            index_new = []
             for index in index_group:
                 if index == "I":
                     df  = pd.merge(df,self.clients_info[["i","id"]],left_on="I",right_on="i").drop(columns=["I","i"])
@@ -202,8 +205,10 @@ class ECTOR(Parameters,constrains,Cost_Function,plotter,standard_cases):
                         if not (time_index,CP_id,CP_id2) in self.data[None]["SF_CP"].keys():
                             self.data[None]["SF_CP"][(time_index,CP_id,CP_id2)] = 0
 
-        if hasattr(self,"freq_SF"):
-            self.data[None]["freq"] = self.freq_SF.set_index("i").to_dict()["freq"]
+        if hasattr(self,"count_timestamp"):
+            self.data[None]["count_timestamp"] = self.count_timestamp.to_dict()["count_timestamp"]
+        else:
+            self.data[None]["count_timestamp"] = {time_index:1 for time_index in self.timestamps.time_index}
         
         ### data structure EC
         data_matrix_CP = self.create_CP_matrix()

@@ -109,7 +109,7 @@ class plotter():
                     index = [i for i,x in enumerate([("SF" in i.columns)==True for i in self.list_df_results]) if x]
                     results_SF = self.list_df_results[index[0]].reset_index()
                     results_SF = pd.merge(results_SF,self.timestamps,on="timestamp")
-                freq_SF = pd.merge(self.freq_SF,self.clients_info[["id","i"]],on="i").drop(columns="i")
+                results_SF = pd.merge(results_SF,self.clients_info[["id","i"]],on="id")
                 results_SF["new_SF"] = 0.0
                 #for i in freq_SF.id:
                 #    print(i)
@@ -117,8 +117,7 @@ class plotter():
                 #    for t in results_SF.time_index:
                 #        results_SF.iloc[(results_SF.id == i) & (results_SF.time_index == t),"new_SF"] = int((t-(t % freq))/freq)
                 for i,row in results_SF.iterrows():
-                    freq = (freq_SF.loc[freq_SF.id == row.id,"freq"]).values[0]
-                    t = int((row.loc["time_index"]-(row.loc["time_index"] % freq))/freq)
+                    t = self.sharing_factors_disc(row.i,row.timestamp,counting=False)
                     results_SF.loc[i,"new_SF"] = results_SF.loc[(results_SF.id == row.id) & (results_SF.time_index == t),"SF"].values[0]
 
                 return results_SF.drop(columns=["SF","time_index"]).rename(columns={"new_SF":"SF"}).set_index(["id","timestamp","CP"])
@@ -160,11 +159,10 @@ class plotter():
                 if plot:
                     results_SF = results_SF.reset_index()
                     for CP in results_SF.CP.unique():
-                        results_SF.loc[results_SF.CP == CP].reset_index().pivot(index=["timestamp"], columns=["id"], values="SF").plot(title = "Sharing Factor "+CP)
+                        results_SF.loc[results_SF.CP == CP].reset_index().pivot(index=["timestamp"], columns=["id"], values="SF").plot(title = "Sharing Factor "+CP,legend=False)
                 else:
                     return results_SF
             else:
-                
                 SF = pd.melt(self.SF.reset_index(), 
                                 id_vars=['time_index','CP_id'], 
                                 value_vars = self.SF.columns, 
@@ -179,7 +177,7 @@ class plotter():
                 if plot:
                     results_SF = results_SF.reset_index()
                     for CP in results_SF.CP.unique():
-                        results_SF.loc[results_SF.CP == CP].reset_index().pivot(index=["timestamp"], columns=["id"], values="SF").plot(title = "Sharing Factor "+CP)
+                        results_SF.loc[results_SF.CP == CP].reset_index().pivot(index=["timestamp"], columns=["id"], values="SF").plot(title = "Sharing Factor "+CP,legend=False)
                 else:
                     return results_SF
         elif SF_required == "CP":
@@ -279,10 +277,12 @@ class plotter():
         Price = self.plot_price_inputs(plot=False)
         df_result = pd.merge(self.clients_info,Price.rename(columns={"price":"price_buy","id_price":"price"}), how="left",on=["price"])
         df_result = pd.merge(df_result,Price.rename(columns={"price":"price_s","id_price":"price_sell"}), how="left",on=["timestamp","price_sell"])
+        count_timestamp = pd.merge(self.count_timestamp.reset_index(), self.timestamps, on="time_index").drop(columns="time_index")
+        df_result = pd.merge(df_result,count_timestamp, how="left",on=["timestamp"])
         df_result = df_result.drop(columns=["i","price","price_sell"]).rename(columns={"price_s":"price_sell"})
         P_consumed = self.plot_consumption_inputs(plot=False)
         df_result = pd.merge(df_result,P_consumed,on=["timestamp","id"])
-        df_result["Cost_consumption"] = np.where(df_result.consumption > 0, df_result.consumption*df_result.price_buy, df_result.consumption*df_result.price_sell)
+        df_result["Cost_consumption"] = np.where(df_result.consumption > 0, df_result.consumption*df_result.price_buy*df_result.count_timestamp, df_result.consumption*df_result.price_sell*df_result.count_timestamp)
         colums_to_plot = ["timestamp","Cost_consumption","Cost_Final_cost"]
         colums_to_plot_energy = ["timestamp","consumption","Final_Consumption"]
         result_CP = self.plot_result_CP(plot=False)
@@ -297,10 +297,10 @@ class plotter():
         #result = pd.concat([result.reset_index().set_index(["timestamp","CP"]),result_CP],axis=1)
         df_result = pd.concat([df_result.set_index(["timestamp","id"]),result_CP],axis=1)
         df_result["Final_Consumption"] = df_result.loc[:,"consumption"]+df_result.loc[:,result_CP.columns].sum(1)
-        df_result["Cost_Final_cost"] = np.where(df_result.Final_Consumption > 0, df_result.Final_Consumption*df_result.price_buy, df_result.Final_Consumption*df_result.price_sell)
+        df_result["Cost_Final_cost"] = np.where(df_result.Final_Consumption > 0, df_result.Final_Consumption*df_result.price_buy*df_result.count_timestamp, df_result.Final_Consumption*df_result.price_sell*df_result.count_timestamp)
         for CP in result_CP.columns:
             df_result["Final_Consumption_"+ CP] = df_result.loc[:,"consumption"]+df_result.loc[:,CP]
-            df_result["Cost_Final_cost_"+CP] = np.where(df_result.loc[:,"Final_Consumption_"+ CP] > 0, df_result.loc[:,"Final_Consumption_"+ CP]*df_result.price_buy, df_result.loc[:,"Final_Consumption_"+ CP]*df_result.price_sell)
+            df_result["Cost_Final_cost_"+CP] = np.where(df_result.loc[:,"Final_Consumption_"+ CP] > 0, df_result.loc[:,"Final_Consumption_"+ CP]*df_result.price_buy*df_result.count_timestamp, df_result.loc[:,"Final_Consumption_"+ CP]*df_result.price_sell*df_result.count_timestamp)
             colums_to_plot.append("Cost_Final_cost_"+CP) 
             colums_to_plot_energy.append("Final_Consumption_"+ CP)
         #df_result.drop(columns=["price_buy","price_sell"])
@@ -386,7 +386,7 @@ class plotter():
             PBat = PBat.rename(columns = {"PBat":"Power"})
             PBat["Power"] = PBat["Power"]*-1
             aggregated_data.append(PBat)
-        
+
         P_bill = self.plot_results_consumers(plot=False).reset_index()[["timestamp","P_bill"]]
         P_bill = P_bill.groupby("timestamp").sum()
         P_bill["type"] = "Billed"
@@ -424,3 +424,60 @@ class plotter():
         else:
             return aggregated_data
         
+    def plot_self_consumption_rate_instantly(self,plot=True):
+        P_consumed = self.plot_consumption_inputs(plot=False)
+        Energy_Allocated = pd.merge(self.get_energy_CP_plot().reset_index(),self.plot_results_sharing_factors(plot=False,SF_required="None").reset_index(),on=["timestamp","CP"])
+        Energy_Allocated["Energy_Allocated"] = Energy_Allocated["SF"]*Energy_Allocated["Energy_CP"]
+        Energy_Allocated = pd.merge(Energy_Allocated,P_consumed,on=["timestamp","id"])
+        Energy_Allocated["self_consumption_rate_instantly"] = Energy_Allocated["Energy_Allocated"]/Energy_Allocated["consumption"]
+        Energy_Allocated = pd.pivot_table(Energy_Allocated,values="self_consumption_rate_instantly",index=["timestamp","id"],columns="CP")
+        first = True
+        for i in Energy_Allocated.columns:
+            divisio = 0.1
+            binsize = np.arange(-1,(2+divisio)/divisio)*divisio
+            binsize = np.append(binsize, float("inf"))
+            bins = pd.cut(Energy_Allocated[i], bins= binsize, labels= [float(round(i,2)) for i in binsize][1:],right=True)
+            if first:
+                first = False
+                res_df = Energy_Allocated[[i]].groupby(bins, observed=True).agg("count")/len(Energy_Allocated)
+            else:
+                res_df = pd.concat([res_df, Energy_Allocated[[i]].groupby(bins, observed=True).agg("count")/len(Energy_Allocated)], axis=1)
+        if plot:
+            ax = res_df.plot()
+            ax.vlines(x=(1/divisio),ymin=0 ,ymax =res_df.max().values[0], color='b', linestyle='--', lw=2)
+        else:
+            col = Energy_Allocated.columns[0]
+            mean_grater0 = Energy_Allocated.loc[(Energy_Allocated.loc[:,col] > 0) & (
+                        Energy_Allocated.loc[:,col] < float("inf"))].mean().values[0]
+            mean = Energy_Allocated.loc[
+                        Energy_Allocated.loc[:,col] < float("inf")].mean().values[0]
+            return res_df, mean, mean_grater0
+
+    def resulting_kpi(self):
+        df = self.plot_results_cost_one_consumer()
+        df_inv=pd.DataFrame()
+        if self.PV>0:
+            inv_pv_ = pd.melt(self.Inv_PV, var_name="PV_index").reset_index(names="i")
+            inv_pv_ = pd.merge(inv_pv_, self.clients_info, on="i")
+            inv_pv_ = pd.merge(self.PV_info, inv_pv_, on="PV_index")
+            inv_pv_ = inv_pv_.loc[:, ["id_PV", "id", "value"]]
+            inv_pv_["id_resource"] = "PV_" + inv_pv_["id_PV"]
+            df_inv = pd.concat([df_inv,inv_pv_])
+        if hasattr(self, "df_bat_curve_val"):
+            print("To Implement")
+            ## implement battery inversion
+        df_inv = df_inv.groupby("id").sum().rename(columns={"value":"Total_Inversion"}).loc[:,["Total_Inversion"]]
+
+        df["Surplus"] = np.where(df.Final_Consumption<0,-1*df.Final_Consumption,0 )
+        df["savings"] = df["Cost_consumption"] -df["Cost_Final_cost"]
+        df_summary = df.reset_index().groupby("id").sum()
+        df_summary = df_summary.loc[:,["Final_Consumption","Surplus","Cost_Final_cost","Cost_consumption","savings"]].rename(columns={"Cost_Final_cost":"Final_Cost","Cost_consumption": "Original_Cost"})
+        df_summary = pd.merge(df_summary, df_inv,on="id")
+
+        number_of_points2year=len(df.reset_index().timestamp.unique()) * self.At/(24*365)
+        df_summary["ROI_yearly"] = df_summary["Total_Inversion"] / (
+                    df_summary["savings"] / number_of_points2year)
+
+        return df_summary
+
+

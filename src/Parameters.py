@@ -20,16 +20,18 @@ class Parameters:
                     df_price (pandas.Dataframe): Timeseries of the price.
         """
         self.I = df_clients.id.nunique()
-        self.clients_info = df_clients.reset_index().rename(columns={"index":"i"}) #pd.DataFrame(data=df_clients.id.unique(),columns=["id"])
+        self.clients_info = df_clients.reset_index().rename(columns={"index":"i"}).loc[:,["i","id","price","price_sell"]] #pd.DataFrame(data=df_clients.id.unique(),columns=["id"])
         #self.clients_info = pd.merge(clients_info,df_clients,on = "id")
         self.timestamps = pd.DataFrame(data=df_consumption.sort_values("timestamp").timestamp.unique(),columns=["timestamp"]).reset_index().rename(columns={"index":"time_index"})
         self.P_Consumed = pd.pivot_table(pd.merge(pd.merge(df_consumption,self.timestamps,on="timestamp"),self.clients_info[["i","id"]],on= "id").drop(columns=["timestamp","id"]),values="consumption",index=["time_index"],columns="i")
         self.id_price = pd.DataFrame(data=pd.concat([df_clients["price"],df_clients["price_sell"]]).unique(),columns=["id_price"]).reset_index().rename(columns={"index":"price_index"})
-        self.Ecost = pd.pivot_table(pd.merge(pd.merge(df_price,self.timestamps,on="timestamp"),self.id_price,on="id_price").drop(columns=["id_price","timestamp"]),values="price",index=["time_index"],columns="price_index")
+        self.Ecost = pd.pivot_table(pd.merge(pd.merge(df_price,self.timestamps,on="timestamp"),self.id_price,on="id_price"),values="price",index=["time_index"],columns="price_index")
 
         if "freq" in df_clients.columns:
-            self.freq_SF = pd.concat([df_clients.loc [:,["id","freq"]].set_index("id"),self.clients_info.set_index("id").loc [:,["i"]]],axis=1).reset_index(drop=True)
-            
+            columns_freq = ["id","freq"]
+            if "type_freq" in df_clients.columns:
+                columns_freq.append("type_freq")
+            self.freq_SF = pd.concat([df_clients.loc [:,columns_freq].set_index("id"),self.clients_info.set_index("id").loc [:,["i"]]],axis=1).reset_index(drop=True)
         if not self.id_price.price_index.isin(self.Ecost.columns).all():
             not_included_price = self.id_price.id_price[~self.id_price.price_index.isin(self.Ecost.columns)]
             raise Exception("Price {} is not in the input".format(', '.join(str(x) for x in not_included_price) ))
@@ -44,6 +46,12 @@ class Parameters:
             na_in_consumption = self.clients_info.id[self.clients_info.i.isin(self.P_Consumed.isna().any().index[self.P_Consumed.isna().any()])]
             raise Exception("There are Na in client's {} consumption".format(', '.join(str(x) for x in na_in_consumption) ))
         
+        if "count_timestamp" in df_price.columns:
+            self.count_timestamp = pd.merge(pd.merge(df_price,self.timestamps,on="timestamp"),self.id_price,on="id_price").drop(columns="id_price").groupby("time_index").mean().loc[:,["count_timestamp"]].astype(int)
+        else:
+            count_timestamp = self.timestamps.copy()
+            count_timestamp["count_timestamp"] = 1
+            self.count_timestamp = count_timestamp.drop(columns = "timestamp").set_index("time_index")
         # va millor aixì per importar
 
 
@@ -194,11 +202,11 @@ class Parameters:
         self.model.I = RangeSet(0,self.I-1)
         self.model.CP = RangeSet(0,self.CP-1)
         self.model.At = Param(default = 1)
-        if hasattr(self,"freq_SF"):
-            self.Define_parameters_variables("freq" ,Var_or_Par="Par")
+        #if hasattr(self,"freq_SF"):
+        #    self.Define_parameters_variables("freq" ,Var_or_Par="Par")
             #self.model.freq = Param(self.model.I,initialize=self.freq_SF.set_index("i").to_dict()["freq"],default=self.freq_SF.set_index("i").to_dict()["freq"])
-        else:
-            self.model.freq = Param(self.model.I,default=1)
+        #else:
+        #    self.model.freq = Param(self.model.I,default=1)
 
 
         new_Par =["T","I","At","CP"]
@@ -259,7 +267,8 @@ class Parameters:
             "mean_self_consumption":[],
             "Charge":["T","Bat"],
             "Bat_operation":["T","Bat"],
-            "mean_abs_ReturnInversion":["I"]
+            "mean_abs_ReturnInversion":["I"],
+            "count_timestamp":["T"]
         }
         if Var_or_Par == "Par":
             setattr(self.model,name,Param(*[getattr(self.model,i) for i in self.list_dependence_Params_and_Variables[name]],default=self.data[None][name]))
